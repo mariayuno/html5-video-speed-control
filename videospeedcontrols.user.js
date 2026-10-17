@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HTML5 Video Speed Controls
 // @namespace    https://github.com/mariayuno/html5-video-speed-control
-// @version      1.6
+// @version      1.7
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
 // @author       lunagus, mariayuno
 // @license      MIT
@@ -182,7 +182,7 @@
         panel.style.cssText = `
             position:absolute;
             bottom:calc(100% + 8px);
-            right:0;
+            left:0;
             background:rgba(20,20,20,0.92);
             border:1px solid rgba(255,255,255,0.15);
             border-radius:8px;
@@ -319,7 +319,7 @@
         floatBtn.style.cssText = `
             position:absolute;
             bottom:48px;
-            right:10px;
+            left:10px;
             z-index:2147483645;
             cursor:pointer;
             font-family:Arial,sans-serif;font-size:12px;font-weight:bold;
