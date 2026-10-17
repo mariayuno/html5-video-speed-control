@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         HTML5 Video Speed Controls
 // @namespace    https://github.com/mariayuno/html5-video-speed-control
-// @version      1.4
+// @version      1.5
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
 // @author       lunagus, mariayuno
 // @license      MIT
 // @match        *://*/*
 // @grant        none
 // @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/mariayuno/html5-video-speed-control/main/videospeedcontrols.user.js
+// @downloadURL  https://raw.githubusercontent.com/mariayuno/html5-video-speed-control/main/videospeedcontrols.user.js
 // ==/UserScript==
 
 (function() {
@@ -34,7 +36,7 @@
         // Tooltip fade-out duration (ms)
         TOOLTIP_FADE: 300,
 
-        // Key bindings  (lowercase; use '\\' for backslash)
+        // Key bindings (lowercase; use '\\' for backslash)
         KEYS: {
             SPEED_UP:   'd',
             SPEED_DOWN: 's',
@@ -42,6 +44,14 @@
             CYCLE:      ['g', '\\'],
             FRAME_PREV: 'q',
             FRAME_NEXT: 'e',
+        },
+
+        // Touch swipe settings
+        TOUCH: {
+            // Fraction of video width that counts as the left/right zone (0.25 = left quarter)
+            ZONE_WIDTH: 0.25,
+            // Minimum vertical drag (px) before a speed step triggers
+            SWIPE_THRESHOLD: 30,
         },
     };
 
@@ -66,7 +76,6 @@
     function showTooltip(message) {
         const root = getTooltipRoot();
 
-        // Re-create if it ended up in the wrong parent (e.g. fullscreen toggled)
         if (tooltipEl && tooltipEl.parentNode !== root) {
             tooltipEl.remove();
             tooltipEl = null;
@@ -151,6 +160,99 @@
     }
 
     // ─────────────────────────────────────────────
+    //  Touch overlay
+    // ─────────────────────────────────────────────
+
+    let touchOverlay = null;
+    let touchStartY  = 0;
+    let touchLastY   = 0;
+    let touchAccum   = 0;   // accumulated px before next step
+
+    function createTouchOverlay(video) {
+        if (touchOverlay) touchOverlay.remove();
+
+        const wrap = document.createElement('div');
+        wrap.style.cssText = `
+            position: absolute;
+            top: 0; left: 0;
+            width: ${CONFIG.TOUCH.ZONE_WIDTH * 100}%;
+            height: 100%;
+            z-index: 2147483646;
+            touch-action: none;
+            cursor: ns-resize;
+        `;
+
+        // Visual hint — subtle label
+        const label = document.createElement('div');
+        label.textContent = '⇕ Speed';
+        label.style.cssText = `
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255,255,255,0.4);
+            font-family: Arial, sans-serif;
+            font-size: 11px;
+            pointer-events: none;
+            user-select: none;
+        `;
+        wrap.appendChild(label);
+
+        wrap.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            touchStartY = touchLastY = e.touches[0].clientY;
+            touchAccum = 0;
+            if (!activeVideo || !activeVideo.isConnected) updateActiveVideo();
+        }, { passive: false });
+
+        wrap.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (!activeVideo) return;
+
+            const y = e.touches[0].clientY;
+            const delta = touchLastY - y;   // positive = finger moving up = speed up
+            touchLastY = y;
+            touchAccum += delta;
+
+            const threshold = CONFIG.TOUCH.SWIPE_THRESHOLD;
+            if (Math.abs(touchAccum) >= threshold) {
+                const steps = Math.floor(Math.abs(touchAccum) / threshold);
+                const dir   = touchAccum > 0 ? 1 : -1;
+                touchAccum -= steps * threshold * dir;
+
+                for (let i = 0; i < steps; i++) {
+                    if (dir > 0) {
+                        activeVideo.playbackRate = Math.min(CONFIG.MAX_SPEED,
+                            +(activeVideo.playbackRate + CONFIG.SPEED_STEP).toFixed(1));
+                    } else {
+                        activeVideo.playbackRate = Math.max(CONFIG.MIN_SPEED,
+                            +(activeVideo.playbackRate - CONFIG.SPEED_STEP).toFixed(1));
+                    }
+                }
+                showTooltip(`Speed: ${activeVideo.playbackRate.toFixed(1)}x`);
+            }
+        }, { passive: false });
+
+        wrap.addEventListener('touchend', () => {
+            touchAccum = 0;
+        });
+
+        // The overlay must sit inside a position:relative parent to use position:absolute.
+        // We wrap the video in one if needed.
+        let parent = video.parentElement;
+        const ps = getComputedStyle(parent).position;
+        if (ps === 'static') parent.style.position = 'relative';
+
+        parent.appendChild(wrap);
+        touchOverlay = wrap;
+    }
+
+    function attachTouchOverlay() {
+        if (!activeVideo) return;
+        createTouchOverlay(activeVideo);
+    }
+
+    // ─────────────────────────────────────────────
     //  Key handler
     // ─────────────────────────────────────────────
 
@@ -210,17 +312,25 @@
 
     function init() {
         updateActiveVideo();
+        if (activeVideo) attachTouchOverlay();
+
         document.addEventListener('keydown', handleKeyPress, true);
+
         document.addEventListener('play', (e) => {
-            if (e.target instanceof HTMLVideoElement) activeVideo = e.target;
+            if (e.target instanceof HTMLVideoElement) {
+                activeVideo = e.target;
+                attachTouchOverlay();
+            }
         }, true);
 
         new MutationObserver((mutations) => {
             for (const m of mutations)
                 for (const node of m.addedNodes)
                     if (node instanceof Element &&
-                        (node.tagName === 'VIDEO' || node.querySelectorAll?.('video').length > 0))
+                        (node.tagName === 'VIDEO' || node.querySelectorAll?.('video').length > 0)) {
                         updateActiveVideo();
+                        attachTouchOverlay();
+                    }
         }).observe(document.body || document.documentElement, { childList: true, subtree: true });
     }
 
