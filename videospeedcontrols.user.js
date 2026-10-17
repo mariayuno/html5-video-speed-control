@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         HTML5 Video Speed Controls
-// @namespace    https://github.com/lunagus/html5-video-speed-control
-// @version      1.1
+// @namespace    https://github.com/mariayuno/html5-video-speed-control
+// @version      1.3
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
-// @author       lunagus
+// @author       lunagus, mariayuno
 // @match        *://*/*
 // @grant        none
 // @run-at       document-end
@@ -12,17 +12,55 @@
 (function() {
     'use strict';
 
-    const SPEED_STEP = 0.1;
-    let activeVideo = null;
+    // ─────────────────────────────────────────────
+    //  CONFIGURATION — edit these to your liking
+    // ─────────────────────────────────────────────
 
-    // UI tooltip system
-    let tooltipElement = null;
+    const CONFIG = {
+        // How much each speed-up / slow-down key changes the rate
+        SPEED_STEP: 0.1,
+
+        // Speeds (in order) that the cycle key rotates through
+        CYCLE_SPEEDS: [1, 2, 3],
+
+        // Min / max playback rate clamps
+        MIN_SPEED: 0.1,
+        MAX_SPEED: 16,
+
+        // How long the tooltip stays visible (ms)
+        TOOLTIP_DURATION: 1500,
+
+        // Tooltip fade-out duration (ms)
+        TOOLTIP_FADE: 300,
+
+        // Key bindings  (lowercase; use '\\' for backslash)
+        KEYS: {
+            SPEED_UP:    'd',
+            SPEED_DOWN:  's',
+            RESET:       'r',
+            CYCLE:       ['g', '\\'],
+            FRAME_PREV:  'q',
+            FRAME_NEXT:  'e',
+        },
+    };
+
+    // ─────────────────────────────────────────────
+    //  State
+    // ─────────────────────────────────────────────
+
+    let activeVideo  = null;
+    let cycleIndex   = 0;
+    let tooltipEl    = null;
     let tooltipTimer = null;
 
+    // ─────────────────────────────────────────────
+    //  Tooltip
+    // ─────────────────────────────────────────────
+
     function showTooltip(message) {
-        if (!tooltipElement) {
-            tooltipElement = document.createElement('div');
-            tooltipElement.style.cssText = `
+        if (!tooltipEl) {
+            tooltipEl = document.createElement('div');
+            tooltipEl.style.cssText = `
                 position: fixed;
                 top: 20px;
                 left: 50%;
@@ -38,23 +76,23 @@
                 transition: opacity 0.3s ease;
                 box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
             `;
-            document.body.appendChild(tooltipElement);
+            document.body.appendChild(tooltipEl);
         }
-
-        tooltipElement.textContent = message;
-        tooltipElement.style.opacity = '1';
-        tooltipElement.style.display = 'block';
+        tooltipEl.textContent = message;
+        tooltipEl.style.opacity = '1';
+        tooltipEl.style.display = 'block';
 
         clearTimeout(tooltipTimer);
         tooltipTimer = setTimeout(() => {
-            tooltipElement.style.opacity = '0';
-            setTimeout(() => {
-                tooltipElement.style.display = 'none';
-            }, 300);
-        }, 1500);
+            tooltipEl.style.opacity = '0';
+            setTimeout(() => { tooltipEl.style.display = 'none'; }, CONFIG.TOOLTIP_FADE);
+        }, CONFIG.TOOLTIP_DURATION);
     }
 
-    // Smart video detection
+    // ─────────────────────────────────────────────
+    //  Video detection
+    // ─────────────────────────────────────────────
+
     function findBestVideo() {
         const videos = Array.from(document.querySelectorAll('video'));
         if (videos.length === 0) return null;
@@ -63,98 +101,85 @@
         const playing = videos.find(v => !v.paused);
         if (playing) return playing;
 
-        return videos.reduce((best, current) => {
-            const rect = current.getBoundingClientRect();
-            const area = rect.width * rect.height;
-            const bestRect = best.getBoundingClientRect();
-            const bestArea = bestRect.width * bestRect.height;
-            return area > bestArea ? current : best;
+        return videos.reduce((best, cur) => {
+            const a = cur.getBoundingClientRect();
+            const b = best.getBoundingClientRect();
+            return a.width * a.height > b.width * b.height ? cur : best;
         });
     }
 
+    function updateActiveVideo() {
+        const v = findBestVideo();
+        if (v) activeVideo = v;
+    }
+
+    // ─────────────────────────────────────────────
+    //  Frame stepping
+    // ─────────────────────────────────────────────
+
     function estimateFPS(video) {
-        let fps = 30;
         try {
-            const quality = video.getVideoPlaybackQuality();
-            if (quality && video.currentTime > 0 && quality.totalVideoFrames > 0) {
-                fps = quality.totalVideoFrames / video.currentTime;
-            }
-        } catch (err) {}
-        return fps;
+            const q = video.getVideoPlaybackQuality();
+            if (q && video.currentTime > 0 && q.totalVideoFrames > 0)
+                return q.totalVideoFrames / video.currentTime;
+        } catch (_) {}
+        return 30;
     }
 
     function stepFrame(video, direction) {
         if (!video || !video.duration) return;
-
         video.pause();
-        const fps = estimateFPS(video);
-        const frameDuration = 1 / fps;
-
-        if (direction < 0) {
-            video.currentTime = Math.max(0, video.currentTime - frameDuration);
-        } else {
-            video.currentTime = Math.min(video.duration, video.currentTime + frameDuration);
-        }
+        const fd = 1 / estimateFPS(video);
+        video.currentTime = direction < 0
+            ? Math.max(0, video.currentTime - fd)
+            : Math.min(video.duration, video.currentTime + fd);
     }
 
-    function updateActiveVideo() {
-        const newVideo = findBestVideo();
-        if (newVideo) {
-            activeVideo = newVideo;
-        }
-    }
+    // ─────────────────────────────────────────────
+    //  Key handler
+    // ─────────────────────────────────────────────
 
     function handleKeyPress(e) {
-        const target = e.target;
-        if (target && (target.tagName === 'INPUT' ||
-                       target.tagName === 'TEXTAREA' ||
-                       target.isContentEditable)) {
-            return;
-        }
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return;
 
-        if (e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) {
-            return;
-        }
-
-        if (!activeVideo || !activeVideo.isConnected) {
-            updateActiveVideo();
-        }
-
+        if (!activeVideo || !activeVideo.isConnected) updateActiveVideo();
         if (!activeVideo) return;
 
-        let handled = false;
+        const key = e.key === '\\' ? '\\' : e.key.toLowerCase();
+        const K = CONFIG.KEYS;
+        let handled = true;
         let message = '';
 
-        switch (e.key.toLowerCase()) {
-            case 'x':
-                activeVideo.playbackRate = Math.max(0.1, activeVideo.playbackRate - SPEED_STEP);
-                message = `Speed: ${activeVideo.playbackRate.toFixed(1)}x`;
-                handled = true;
-                break;
+        if (key === K.SPEED_UP) {
+            activeVideo.playbackRate = Math.min(CONFIG.MAX_SPEED, +(activeVideo.playbackRate + CONFIG.SPEED_STEP).toFixed(1));
+            message = `Speed: ${activeVideo.playbackRate.toFixed(1)}x`;
 
-            case 'c':
-                activeVideo.playbackRate = Math.min(16, activeVideo.playbackRate + SPEED_STEP);
-                message = `Speed: ${activeVideo.playbackRate.toFixed(1)}x`;
-                handled = true;
-                break;
+        } else if (key === K.SPEED_DOWN) {
+            activeVideo.playbackRate = Math.max(CONFIG.MIN_SPEED, +(activeVideo.playbackRate - CONFIG.SPEED_STEP).toFixed(1));
+            message = `Speed: ${activeVideo.playbackRate.toFixed(1)}x`;
 
-            case 'z':
-                activeVideo.playbackRate = 1.0;
-                message = 'Speed: 1.0x (Reset)';
-                handled = true;
-                break;
+        } else if (key === K.RESET) {
+            activeVideo.playbackRate = 1.0;
+            cycleIndex = 0;
+            message = 'Speed: 1.0x (Reset)';
 
-            case 'q':
-                stepFrame(activeVideo, -1);
-                message = '◄ Previous Frame';
-                handled = true;
-                break;
+        } else if (K.CYCLE.includes(key)) {
+            cycleIndex = (cycleIndex + 1) % CONFIG.CYCLE_SPEEDS.length;
+            activeVideo.playbackRate = CONFIG.CYCLE_SPEEDS[cycleIndex];
+            message = `Speed: ${CONFIG.CYCLE_SPEEDS[cycleIndex]}x`;
 
-            case 'e':
-                stepFrame(activeVideo, 1);
-                message = 'Next Frame ►';
-                handled = true;
-                break;
+        } else if (key === K.FRAME_PREV) {
+            stepFrame(activeVideo, -1);
+            message = '◄ Previous Frame';
+
+        } else if (key === K.FRAME_NEXT) {
+            stepFrame(activeVideo, 1);
+            message = 'Next Frame ►';
+
+        } else {
+            handled = false;
         }
 
         if (handled) {
@@ -164,43 +189,26 @@
         }
     }
 
+    // ─────────────────────────────────────────────
+    //  Init
+    // ─────────────────────────────────────────────
+
     function init() {
         updateActiveVideo();
-
         document.addEventListener('keydown', handleKeyPress, true);
-
         document.addEventListener('play', (e) => {
-            if (e.target instanceof HTMLVideoElement) {
-                activeVideo = e.target;
-            }
+            if (e.target instanceof HTMLVideoElement) activeVideo = e.target;
         }, true);
 
-        const observer = new MutationObserver((mutations) => {
-            for (const mutation of mutations) {
-                for (const node of mutation.addedNodes) {
-                    if (!(node instanceof Element)) continue;
-
-                    if (node.tagName === 'VIDEO') {
+        new MutationObserver((mutations) => {
+            for (const m of mutations)
+                for (const node of m.addedNodes)
+                    if (node instanceof Element &&
+                        (node.tagName === 'VIDEO' || node.querySelectorAll?.('video').length > 0))
                         updateActiveVideo();
-                    } else {
-                        const videos = node.querySelectorAll?.('video');
-                        if (videos && videos.length > 0) {
-                            updateActiveVideo();
-                        }
-                    }
-                }
-            }
-        });
-
-        observer.observe(document.body || document.documentElement, {
-            childList: true,
-            subtree: true
-        });
+        }).observe(document.body || document.documentElement, { childList: true, subtree: true });
     }
 
-    if (document.body) {
-        init();
-    } else {
-        document.addEventListener('DOMContentLoaded', init);
-    }
+    document.body ? init() : document.addEventListener('DOMContentLoaded', init);
+
 })();
