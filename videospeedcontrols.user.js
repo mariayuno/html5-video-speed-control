@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HTML5 Video Speed Controls
 // @namespace    https://github.com/mariayuno/html5-video-speed-control
-// @version      1.7
+// @version      1.8
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
 // @author       lunagus, mariayuno
 // @license      MIT
@@ -38,7 +38,7 @@
         // Ordered list of toolbar selectors to try (most-specific first)
         TOOLBAR_SELECTORS: [
             // YouTube
-            '.ytp-right-controls',
+            '.ytp-left-controls',
             // Vimeo
             '.vp-controls-wrapper .vp-controls',
             // Twitch
@@ -318,7 +318,7 @@
         floatBtn.id = 'vsc-float';
         floatBtn.style.cssText = `
             position:absolute;
-            bottom:48px;
+            bottom:10px;
             left:10px;
             z-index:2147483645;
             cursor:pointer;
@@ -369,7 +369,7 @@
     // ─────────────────────────────────────────────
 
     function updateUI() {
-        const label = currentSpeed === 1.0 ? '⏩' : `${currentSpeed.toFixed(1)}x`;
+        const label = `${currentSpeed.toFixed(1)}x`;
 
         if (toolbarBtn) {
             const b = toolbarBtn.querySelector('#vsc-btn');
