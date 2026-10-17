@@ -1,15 +1,14 @@
 // ==UserScript==
 // @name         HTML5 Video Speed Controls
 // @namespace    https://github.com/mariayuno/html5-video-speed-control
-// @version      1.3
+// @version      1.4
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
 // @author       lunagus, mariayuno
-// @license MIT
+// @license      MIT
 // @match        *://*/*
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
-
 
 (function() {
     'use strict';
@@ -37,12 +36,12 @@
 
         // Key bindings  (lowercase; use '\\' for backslash)
         KEYS: {
-            SPEED_UP:    'd',
-            SPEED_DOWN:  's',
-            RESET:       'r',
-            CYCLE:       ['g', '\\'],
-            FRAME_PREV:  'q',
-            FRAME_NEXT:  'e',
+            SPEED_UP:   'd',
+            SPEED_DOWN: 's',
+            RESET:      'r',
+            CYCLE:      ['g', '\\'],
+            FRAME_PREV: 'q',
+            FRAME_NEXT: 'e',
         },
     };
 
@@ -59,7 +58,20 @@
     //  Tooltip
     // ─────────────────────────────────────────────
 
+    function getTooltipRoot() {
+        const fs = document.fullscreenElement;
+        return (fs && fs.contains(activeVideo)) ? fs : document.body;
+    }
+
     function showTooltip(message) {
+        const root = getTooltipRoot();
+
+        // Re-create if it ended up in the wrong parent (e.g. fullscreen toggled)
+        if (tooltipEl && tooltipEl.parentNode !== root) {
+            tooltipEl.remove();
+            tooltipEl = null;
+        }
+
         if (!tooltipEl) {
             tooltipEl = document.createElement('div');
             tooltipEl.style.cssText = `
@@ -78,8 +90,9 @@
                 transition: opacity 0.3s ease;
                 box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
             `;
-            document.body.appendChild(tooltipEl);
+            root.appendChild(tooltipEl);
         }
+
         tooltipEl.textContent = message;
         tooltipEl.style.opacity = '1';
         tooltipEl.style.display = 'block';
