@@ -4,10 +4,12 @@
 // @version      1.3
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
 // @author       lunagus, mariayuno
+// @license MIT
 // @match        *://*/*
 // @grant        none
 // @run-at       document-end
 // ==/UserScript==
+
 
 (function() {
     'use strict';
