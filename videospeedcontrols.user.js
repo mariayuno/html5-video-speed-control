@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HTML5 Video Speed Controls
 // @namespace    https://github.com/mariayuno/html5-video-speed-control
-// @version      2.1
+// @version      2.2
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
 // @author       lunagus, mariayuno
 // @license      MIT
@@ -26,6 +26,8 @@
         MAX_SPEED:        16,
         TOOLTIP_DURATION: 1500,
         TOOLTIP_FADE:     300,
+        FLOAT_CORNER:     'top-left',   // top-left | top-right | bottom-left | bottom-right
+        FLOAT_OFFSET:     12,           // px from the video edge
         KEYS: {
             SPEED_UP:   'd',
             SPEED_DOWN: 's',
@@ -67,28 +69,66 @@
     let rafId        = null;
 
     // ─────────────────────────────────────────────
+    //  Top layer helpers
+    //  Popover elements render in the browser's top layer, above ALL page UI
+    //  (player overlays, z-index wars, even fullscreen).
+    // ─────────────────────────────────────────────
+
+    function uiRoot() {
+        const fs = document.fullscreenElement;
+        // A <video> can't have children, so fall back to body in that case
+        return (fs && fs.tagName !== 'VIDEO') ? fs : document.body;
+    }
+
+    function topLayer(el) {
+        if (!el || !el.isConnected) return;
+        try {
+            el.setAttribute('popover', 'manual');
+            try { el.hidePopover(); } catch (_) {}
+            el.showPopover();
+        } catch (_) {}
+    }
+
+    function mountInRoot(el) {
+        const root = uiRoot();
+        if (el.parentNode !== root) root.appendChild(el);
+        topLayer(el);
+    }
+
+    function isReallyVisible(el) {
+        if (!el || !el.isConnected) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return false;
+        for (let n = el, i = 0; n && i < 8; n = n.parentElement, i++) {
+            const cs = getComputedStyle(n);
+            if (cs.opacity === '0' || cs.visibility === 'hidden' || cs.display === 'none') return false;
+        }
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return !!hit && el.contains(hit);
+    }
+
+    // ─────────────────────────────────────────────
     //  Tooltip
     // ─────────────────────────────────────────────
 
-    function getTooltipRoot() {
-        const fs = document.fullscreenElement;
-        return (fs && fs.contains(activeVideo)) ? fs : document.body;
-    }
-
     function showTooltip(msg) {
-        const root = getTooltipRoot();
+        const root = uiRoot();
         if (tooltipEl && tooltipEl.parentNode !== root) { tooltipEl.remove(); tooltipEl = null; }
         if (!tooltipEl) {
             tooltipEl = document.createElement('div');
             tooltipEl.style.cssText = `
                 position:fixed;top:20px;left:50%;transform:translateX(-50%);
+                margin:0;inset:auto;overflow:visible;border:none;
                 background:rgba(0,0,0,0.75);color:#fff;padding:8px 16px;
                 border-radius:4px;font-family:Arial,sans-serif;font-size:16px;
                 z-index:2147483647;pointer-events:none;
                 transition:opacity 0.3s ease;box-shadow:0 2px 8px rgba(0,0,0,0.4);
             `;
+            tooltipEl.style.top = '20px';
+            tooltipEl.style.left = '50%';
             root.appendChild(tooltipEl);
         }
+        topLayer(tooltipEl);
         tooltipEl.textContent = msg;
         tooltipEl.style.opacity = '1';
         tooltipEl.style.display = 'block';
@@ -117,7 +157,7 @@
 
     function updateActiveVideo() {
         const v = findBestVideo();
-        if (v && v !== activeVideo) { activeVideo = v; currentSpeed = v.playbackRate; }
+        if (v && v !== activeVideo) { activeVideo = v; currentSpeed = +v.playbackRate.toFixed(1); }
     }
 
     // ─────────────────────────────────────────────
@@ -162,18 +202,13 @@
         if (panel) panel.remove();
         panel = document.createElement('div');
         panel.style.cssText = `
-            position:fixed;
+            position:fixed;margin:0;inset:auto;overflow:visible;
             background:rgba(20,20,20,0.93);border:1px solid rgba(255,255,255,0.15);
             border-radius:8px;padding:10px 12px;z-index:2147483646;
             font-family:Arial,sans-serif;font-size:13px;color:#fff;
             min-width:190px;box-shadow:0 4px 16px rgba(0,0,0,0.6);
             backdrop-filter:blur(8px);user-select:none;
         `;
-
-        // Position panel above anchor
-        const ar = anchor.getBoundingClientRect();
-        panel.style.left = `${ar.left}px`;
-        panel.style.top  = `${ar.top - 140}px`;
 
         const mkBtn = (txt, tip, fn) => {
             const b = document.createElement('button');
@@ -223,12 +258,31 @@
         presets.appendChild(rb);
         panel.appendChild(presets);
 
-        document.body.appendChild(panel);
+        uiRoot().appendChild(panel);
+        topLayer(panel);
+
+        // Place above the anchor, or below it if there's no room above
+        const ar = anchor.getBoundingClientRect();
+        const ph = panel.offsetHeight, pw = panel.offsetWidth;
+        const top = ar.top - ph - 6 >= 4 ? ar.top - ph - 6 : ar.bottom + 6;
+        panel.style.left = `${Math.min(Math.max(4, ar.left), innerWidth - pw - 4)}px`;
+        panel.style.top  = `${Math.min(Math.max(4, top), innerHeight - ph - 4)}px`;
+
         panelOpen = true;
-        setTimeout(() => document.addEventListener('click', closePanel, { once: true, capture: true }), 0);
+        updateUI();
+        setTimeout(() => document.addEventListener('click', outsideClose, true), 0);
     }
 
-    function closePanel() { panel?.remove(); panel = null; panelOpen = false; }
+    function outsideClose(e) {
+        if (panel && (panel.contains(e.target) || floatBtn?.contains(e.target) || toolbarBtn?.contains(e.target))) return;
+        closePanel();
+    }
+
+    function closePanel() {
+        document.removeEventListener('click', outsideClose, true);
+        panel?.remove(); panel = null; panelOpen = false;
+    }
+
     function togglePanel(anchor) { panelOpen ? closePanel() : buildPanel(anchor); }
 
     // ─────────────────────────────────────────────
@@ -244,8 +298,9 @@
         });
 
         if (floatBtn) {
-            const tbVisible = toolbarBtn?.isConnected && toolbarBtn.offsetParent !== null;
-            floatBtn.style.opacity       = tbVisible ? '0' : (currentSpeed !== 1.0 ? '1' : '0.4');
+            // Toolbar button wins while it's genuinely visible; float covers when it's hidden/missing
+            const tbVisible = isReallyVisible(toolbarBtn);
+            floatBtn.style.opacity       = tbVisible ? '0' : (currentSpeed !== 1.0 ? '1' : '0.45');
             floatBtn.style.pointerEvents = tbVisible ? 'none' : 'auto';
         }
 
@@ -260,8 +315,7 @@
     }
 
     // ─────────────────────────────────────────────
-    //  Float button — fixed position, tracks video rect
-    //  This works regardless of DOM structure / iframes
+    //  Float button — fixed, top layer, tracks the video's rect
     // ─────────────────────────────────────────────
 
     function buildFloatBtn() {
@@ -271,43 +325,48 @@
         floatBtn = document.createElement('div');
         floatBtn.id = 'vsc-float';
         floatBtn.style.cssText = `
-            position:fixed;
+            position:fixed;margin:0;inset:auto;overflow:visible;
             z-index:2147483645;cursor:pointer;
             font-family:Arial,sans-serif;font-size:12px;font-weight:bold;
-            color:rgba(255,255,255,0.95);background:rgba(0,0,0,0.55);
+            color:rgba(255,255,255,0.95);background:rgba(0,0,0,0.6);
             border-radius:4px;padding:3px 8px;
             backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.2);
-            transition:opacity 0.2s,background 0.15s;user-select:none;opacity:0.4;
+            transition:opacity 0.2s,background 0.15s;user-select:none;opacity:0.45;
         `;
         const lbl = document.createElement('span');
         lbl.className = 'vsc-lbl';
         lbl.textContent = `${currentSpeed.toFixed(1)}x`;
         floatBtn.appendChild(lbl);
 
-        floatBtn.onmouseenter = () => floatBtn.style.background = 'rgba(0,0,0,0.8)';
-        floatBtn.onmouseleave = () => floatBtn.style.background = 'rgba(0,0,0,0.55)';
+        floatBtn.onmouseenter = () => floatBtn.style.background = 'rgba(0,0,0,0.85)';
+        floatBtn.onmouseleave = () => floatBtn.style.background = 'rgba(0,0,0,0.6)';
         floatBtn.onclick = e => { e.stopPropagation(); togglePanel(floatBtn); };
+        // Keep the player from reacting (pause/seek) when the button is pressed
+        ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'dblclick', 'touchstart']
+            .forEach(t => floatBtn.addEventListener(t, e => e.stopPropagation()));
 
-        document.body.appendChild(floatBtn);
+        mountInRoot(floatBtn);
         positionFloatBtn();
         startPositionTracking();
     }
 
-    // Position float button at bottom-left of the video element using fixed coords
     function positionFloatBtn() {
         if (!floatBtn || !activeVideo) return;
         const r = activeVideo.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) return;
-        floatBtn.style.left   = `${r.left + 10}px`;
-        floatBtn.style.top    = `${r.bottom - 44}px`;   // ~44px up from bottom = above controls
+        const hidden = r.width === 0 || r.height === 0 || r.bottom < 0 || r.top > innerHeight;
+        floatBtn.style.visibility = hidden ? 'hidden' : 'visible';
+        if (hidden) return;
+        const fw = floatBtn.offsetWidth, fh = floatBtn.offsetHeight;
+        const o = CONFIG.FLOAT_OFFSET, c = CONFIG.FLOAT_CORNER;
+        const x = c.endsWith('left') ? r.left + o : r.right - fw - o;
+        const y = c.startsWith('top') ? r.top + o : r.bottom - fh - o;
+        floatBtn.style.left = `${Math.min(Math.max(0, x), innerWidth - fw)}px`;
+        floatBtn.style.top  = `${Math.min(Math.max(0, y), innerHeight - fh)}px`;
     }
 
     function startPositionTracking() {
         cancelAnimationFrame(rafId);
-        function tick() {
-            positionFloatBtn();
-            rafId = requestAnimationFrame(tick);
-        }
+        const tick = () => { positionFloatBtn(); rafId = requestAnimationFrame(tick); };
         rafId = requestAnimationFrame(tick);
     }
 
@@ -318,6 +377,7 @@
     function tryBuildToolbarBtn() {
         if (toolbarBtn?.isConnected) return true;
         toolbarBtn?.remove();
+        toolbarBtn = null;
 
         for (const [sel, pos] of CONFIG.TOOLBAR_SELECTORS) {
             const el = document.querySelector(sel);
@@ -385,9 +445,9 @@
         if      (key === K.SPEED_UP)    setSpeed(currentSpeed + CONFIG.SPEED_STEP);
         else if (key === K.SPEED_DOWN)  setSpeed(currentSpeed - CONFIG.SPEED_STEP);
         else if (key === K.RESET)       { setSpeed(1.0); cycleIndex = 0; }
-        else if (K.CYCLE.includes(key)) { cycleIndex = (cycleIndex+1) % CONFIG.CYCLE_SPEEDS.length; setSpeed(CONFIG.CYCLE_SPEEDS[cycleIndex]); }
-        else if (key === K.FRAME_PREV)  { stepFrame(activeVideo,-1); showTooltip('◄ Previous Frame'); }
-        else if (key === K.FRAME_NEXT)  { stepFrame(activeVideo, 1); showTooltip('Next Frame ►'); }
+        else if (K.CYCLE.includes(key)) { cycleIndex = (cycleIndex + 1) % CONFIG.CYCLE_SPEEDS.length; setSpeed(CONFIG.CYCLE_SPEEDS[cycleIndex]); }
+        else if (key === K.FRAME_PREV)  { stepFrame(activeVideo, -1); showTooltip('◄ Previous Frame'); }
+        else if (key === K.FRAME_NEXT)  { stepFrame(activeVideo,  1); showTooltip('Next Frame ►'); }
         else handled = false;
 
         if (handled) { e.preventDefault(); e.stopPropagation(); }
@@ -405,9 +465,21 @@
             if (!(e.target instanceof HTMLVideoElement)) return;
             const wasNew = e.target !== activeVideo;
             activeVideo = e.target;
-            currentSpeed = activeVideo.playbackRate;
+            currentSpeed = +activeVideo.playbackRate.toFixed(1);
             if (wasNew || !floatBtn?.isConnected) setup();
         }, true);
+
+        // Keep UI in sync when the site (or anything else) changes the rate
+        document.addEventListener('ratechange', e => {
+            if (e.target === activeVideo) { currentSpeed = +activeVideo.playbackRate.toFixed(1); updateUI(); }
+        }, true);
+
+        // Re-home UI into the fullscreen element (or back to body) on toggle
+        document.addEventListener('fullscreenchange', () => {
+            if (floatBtn?.isConnected) mountInRoot(floatBtn);
+            if (panel?.isConnected) mountInRoot(panel);
+            if (tooltipEl) { tooltipEl.remove(); tooltipEl = null; }
+        });
 
         new MutationObserver(mutations => {
             for (const m of mutations)
@@ -418,6 +490,17 @@
                         if (!floatBtn?.isConnected) setup();
                     }
         }).observe(document.body || document.documentElement, { childList: true, subtree: true });
+
+        // Watchdog: if the site re-renders and drops our UI, bring it back
+        setInterval(() => {
+            if (!activeVideo?.isConnected) updateActiveVideo();
+            if (!activeVideo) return;
+            if (!floatBtn?.isConnected) { floatBtn = null; setup(); return; }
+            try { if (!floatBtn.matches(':popover-open')) topLayer(floatBtn); } catch (_) {}
+            if (floatBtn.parentNode !== uiRoot()) mountInRoot(floatBtn);
+            if (!toolbarBtn?.isConnected) tryBuildToolbarBtn();
+            updateUI();
+        }, 1000);
 
         if (activeVideo) setup();
     }
