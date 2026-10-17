@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HTML5 Video Speed Controls
 // @namespace    https://github.com/mariayuno/html5-video-speed-control
-// @version      2.0
+// @version      2.1
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
 // @author       lunagus, mariayuno
 // @license      MIT
@@ -34,16 +34,14 @@
             FRAME_PREV: 'q',
             FRAME_NEXT: 'e',
         },
-        // Known control bar selectors [selector, 'append'|'prepend']
+        // Known toolbar selectors [selector, 'append'|'prepend']
         TOOLBAR_SELECTORS: [
-            ['.ytp-left-controls',                    'append'],
-            ['.vp-controls',                          'append'],
-            ['.player-controls__right-control-group', 'prepend'],
-            ['.vjs-control-bar',                      'append'],
-            ['.plyr__controls',                       'append'],
-            ['.jw-controlbar',                        'append'],
-            ['.vilos-controls-top',                   'append'],  // Crunchyroll vilos
-            ['.vilos-controls',                       'append'],  // Crunchyroll
+            ['.ytp-left-controls',                    'append'],   // YouTube
+            ['.vp-controls',                          'append'],   // Vimeo
+            ['.player-controls__right-control-group', 'prepend'],  // Twitch
+            ['.vjs-control-bar',                      'append'],   // Video.js
+            ['.plyr__controls',                       'append'],   // Plyr
+            ['.jw-controlbar',                        'append'],   // JW Player
             ['[class*="control-bar"]',                'append'],
             ['[class*="controlBar"]',                 'append'],
             ['[class*="controls-bar"]',               'append'],
@@ -56,16 +54,17 @@
     //  State
     // ─────────────────────────────────────────────
 
-    let activeVideo      = null;
-    let cycleIndex       = 0;
-    let tooltipEl        = null;
-    let tooltipTimer     = null;
-    let currentSpeed     = 1.0;
-    let floatBtn         = null;
-    let toolbarBtn       = null;
-    let panel            = null;
-    let panelOpen        = false;
-    let pollTimer        = null;
+    let activeVideo  = null;
+    let cycleIndex   = 0;
+    let tooltipEl    = null;
+    let tooltipTimer = null;
+    let currentSpeed = 1.0;
+    let floatBtn     = null;
+    let toolbarBtn   = null;
+    let panel        = null;
+    let panelOpen    = false;
+    let pollTimer    = null;
+    let rafId        = null;
 
     // ─────────────────────────────────────────────
     //  Tooltip
@@ -122,63 +121,6 @@
     }
 
     // ─────────────────────────────────────────────
-    //  Find player wrapper
-    //  Walk up from video until we find a container
-    //  that is roughly as large as the video itself.
-    // ─────────────────────────────────────────────
-
-    function findPlayerWrapper(video) {
-        const vr = video.getBoundingClientRect();
-        const vArea = vr.width * vr.height;
-        if (vArea === 0) return video.parentElement;
-
-        let el = video.parentElement;
-        for (let i = 0; i < 8 && el && el !== document.body; i++) {
-            const r = el.getBoundingClientRect();
-            const area = r.width * r.height;
-            // Accept the first ancestor whose area is close to the video's
-            if (area > 0 && area <= vArea * 1.5) return el;
-            el = el.parentElement;
-        }
-        return video.parentElement;
-    }
-
-    // ─────────────────────────────────────────────
-    //  Find control bar — search INSIDE player wrapper
-    // ─────────────────────────────────────────────
-
-    function findToolbar(wrapper) {
-        // 1. Try known selectors globally
-        for (const [sel] of CONFIG.TOOLBAR_SELECTORS) {
-            const el = document.querySelector(sel);
-            if (el) return { el, pos: CONFIG.TOOLBAR_SELECTORS.find(s => s[0] === sel)[1] };
-        }
-
-        // 2. Heuristic: find a short wide bar near the bottom of the wrapper
-        const wr = wrapper.getBoundingClientRect();
-        const candidates = Array.from(wrapper.querySelectorAll('*')).filter(el => {
-            if (el.id === 'vsc-toolbar-btn' || el.closest('#vsc-toolbar-btn')) return false;
-            const r = el.getBoundingClientRect();
-            if (r.width < wr.width * 0.4) return false;   // must be wide
-            if (r.height < 24 || r.height > 80) return false; // must be bar-shaped
-            if (r.bottom < wr.bottom - r.height * 3) return false; // must be near bottom
-            const style = getComputedStyle(el);
-            if (style.display === 'none' || style.visibility === 'hidden') return false;
-            return true;
-        });
-
-        if (candidates.length) {
-            // Pick the one closest to the bottom
-            const best = candidates.reduce((a, b) =>
-                b.getBoundingClientRect().bottom > a.getBoundingClientRect().bottom ? b : a
-            );
-            return { el: best, pos: 'append' };
-        }
-
-        return null;
-    }
-
-    // ─────────────────────────────────────────────
     //  Frame stepping
     // ─────────────────────────────────────────────
 
@@ -220,7 +162,7 @@
         if (panel) panel.remove();
         panel = document.createElement('div');
         panel.style.cssText = `
-            position:absolute;bottom:calc(100% + 8px);left:0;
+            position:fixed;
             background:rgba(20,20,20,0.93);border:1px solid rgba(255,255,255,0.15);
             border-radius:8px;padding:10px 12px;z-index:2147483646;
             font-family:Arial,sans-serif;font-size:13px;color:#fff;
@@ -228,7 +170,12 @@
             backdrop-filter:blur(8px);user-select:none;
         `;
 
-        const btn = (txt, tip, fn) => {
+        // Position panel above anchor
+        const ar = anchor.getBoundingClientRect();
+        panel.style.left = `${ar.left}px`;
+        panel.style.top  = `${ar.top - 140}px`;
+
+        const mkBtn = (txt, tip, fn) => {
             const b = document.createElement('button');
             b.textContent = txt; b.title = tip;
             b.style.cssText = `background:rgba(255,255,255,0.12);border:none;color:#fff;
@@ -239,7 +186,6 @@
             return b;
         };
 
-        // Row
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px;';
         const disp = document.createElement('span');
@@ -247,13 +193,12 @@
         disp.style.cssText = 'flex:1;text-align:center;font-weight:bold;font-size:15px;';
         disp.textContent = `${currentSpeed.toFixed(1)}x`;
         row.append(
-            btn('−', 'Slow down (s)', () => setSpeed(currentSpeed - CONFIG.SPEED_STEP)),
+            mkBtn('−', 'Slow down (s)', () => setSpeed(currentSpeed - CONFIG.SPEED_STEP)),
             disp,
-            btn('+', 'Speed up (d)',  () => setSpeed(currentSpeed + CONFIG.SPEED_STEP))
+            mkBtn('+', 'Speed up (d)',  () => setSpeed(currentSpeed + CONFIG.SPEED_STEP))
         );
         panel.appendChild(row);
 
-        // Slider
         const sl = document.createElement('input');
         sl.type = 'range'; sl.min = CONFIG.MIN_SPEED; sl.max = 4;
         sl.step = CONFIG.SPEED_STEP; sl.value = currentSpeed;
@@ -263,89 +208,76 @@
         sl.onclick = e => e.stopPropagation();
         panel.appendChild(sl);
 
-        // Presets
         const presets = document.createElement('div');
         presets.style.cssText = 'display:flex;gap:5px;';
         CONFIG.CYCLE_SPEEDS.forEach(spd => {
-            const pb = btn(`${spd}x`, `Set ${spd}x`, () => {
+            const pb = mkBtn(`${spd}x`, `Set ${spd}x`, () => {
                 setSpeed(spd); cycleIndex = CONFIG.CYCLE_SPEEDS.indexOf(spd);
             });
             pb.className = `vsc-preset vsc-p${spd}`;
             pb.style.flex = '1';
             presets.appendChild(pb);
         });
-        const rb = btn('↺', 'Reset (r)', () => { setSpeed(1.0); cycleIndex = 0; });
+        const rb = mkBtn('↺', 'Reset (r)', () => { setSpeed(1.0); cycleIndex = 0; });
         rb.style.flex = '1';
         presets.appendChild(rb);
         panel.appendChild(presets);
 
-        anchor.style.position = 'relative';
-        anchor.appendChild(panel);
+        document.body.appendChild(panel);
         panelOpen = true;
         setTimeout(() => document.addEventListener('click', closePanel, { once: true, capture: true }), 0);
     }
 
-    function closePanel() {
-        panel?.remove(); panel = null; panelOpen = false;
-    }
-
-    function togglePanel(anchor) {
-        panelOpen ? closePanel() : buildPanel(anchor);
-    }
+    function closePanel() { panel?.remove(); panel = null; panelOpen = false; }
+    function togglePanel(anchor) { panelOpen ? closePanel() : buildPanel(anchor); }
 
     // ─────────────────────────────────────────────
-    //  Update UI state
+    //  Update UI
     // ─────────────────────────────────────────────
 
     function updateUI() {
         const lbl = `${currentSpeed.toFixed(1)}x`;
-
         [floatBtn, toolbarBtn].forEach(b => {
             if (!b) return;
             const l = b.querySelector('.vsc-lbl');
             if (l) l.textContent = lbl;
         });
 
-        // Float visibility logic
         if (floatBtn) {
             const tbVisible = toolbarBtn?.isConnected && toolbarBtn.offsetParent !== null;
-            floatBtn.style.opacity  = tbVisible ? '0' : (currentSpeed !== 1.0 ? '1' : '0.4');
+            floatBtn.style.opacity       = tbVisible ? '0' : (currentSpeed !== 1.0 ? '1' : '0.4');
             floatBtn.style.pointerEvents = tbVisible ? 'none' : 'auto';
         }
 
-        // Panel sync
         if (panel) {
-            const d = panel.querySelector('.vsc-disp');
-            if (d) d.textContent = lbl;
-            const s = panel.querySelector('.vsc-slider');
-            if (s) s.value = currentSpeed;
+            const d = panel.querySelector('.vsc-disp');   if (d) d.textContent = lbl;
+            const s = panel.querySelector('.vsc-slider'); if (s) s.value = currentSpeed;
             panel.querySelectorAll('.vsc-preset').forEach(pb => {
-                const spd = parseFloat(pb.textContent);
-                pb.style.background = spd === currentSpeed
+                pb.style.background = parseFloat(pb.textContent) === currentSpeed
                     ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)';
             });
         }
     }
 
     // ─────────────────────────────────────────────
-    //  Build floating button
+    //  Float button — fixed position, tracks video rect
+    //  This works regardless of DOM structure / iframes
     // ─────────────────────────────────────────────
 
-    function buildFloatBtn(wrapper) {
+    function buildFloatBtn() {
         if (floatBtn?.isConnected) return;
         floatBtn?.remove();
 
         floatBtn = document.createElement('div');
         floatBtn.id = 'vsc-float';
         floatBtn.style.cssText = `
-            position:absolute;bottom:10px;left:10px;
+            position:fixed;
             z-index:2147483645;cursor:pointer;
             font-family:Arial,sans-serif;font-size:12px;font-weight:bold;
             color:rgba(255,255,255,0.95);background:rgba(0,0,0,0.55);
             border-radius:4px;padding:3px 8px;
             backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,0.2);
-            transition:opacity 0.2s,background 0.15s;user-select:none;
-            opacity:0.4;
+            transition:opacity 0.2s,background 0.15s;user-select:none;opacity:0.4;
         `;
         const lbl = document.createElement('span');
         lbl.className = 'vsc-lbl';
@@ -356,70 +288,82 @@
         floatBtn.onmouseleave = () => floatBtn.style.background = 'rgba(0,0,0,0.55)';
         floatBtn.onclick = e => { e.stopPropagation(); togglePanel(floatBtn); };
 
-        if (getComputedStyle(wrapper).position === 'static') wrapper.style.position = 'relative';
-        wrapper.appendChild(floatBtn);
+        document.body.appendChild(floatBtn);
+        positionFloatBtn();
+        startPositionTracking();
+    }
 
-        document.addEventListener('fullscreenchange', () => {
-            const fs = document.fullscreenElement;
-            if (fs && floatBtn && !fs.contains(floatBtn)) {
-                if (getComputedStyle(fs).position === 'static') fs.style.position = 'relative';
-                fs.appendChild(floatBtn);
-            }
-        });
+    // Position float button at bottom-left of the video element using fixed coords
+    function positionFloatBtn() {
+        if (!floatBtn || !activeVideo) return;
+        const r = activeVideo.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        floatBtn.style.left   = `${r.left + 10}px`;
+        floatBtn.style.top    = `${r.bottom - 44}px`;   // ~44px up from bottom = above controls
+    }
+
+    function startPositionTracking() {
+        cancelAnimationFrame(rafId);
+        function tick() {
+            positionFloatBtn();
+            rafId = requestAnimationFrame(tick);
+        }
+        rafId = requestAnimationFrame(tick);
     }
 
     // ─────────────────────────────────────────────
-    //  Build toolbar button
+    //  Toolbar button
     // ─────────────────────────────────────────────
 
-    function buildToolbarBtn(el, pos) {
-        if (toolbarBtn?.isConnected) return;
+    function tryBuildToolbarBtn() {
+        if (toolbarBtn?.isConnected) return true;
         toolbarBtn?.remove();
 
-        const wrap = document.createElement('div');
-        wrap.id = 'vsc-toolbar-btn';
-        wrap.style.cssText = `
-            position:relative;display:inline-flex;align-items:center;
-            height:100%;cursor:pointer;padding:0 7px;
-            font-family:Arial,sans-serif;font-size:12px;font-weight:bold;
-            color:rgba(255,255,255,0.95);border-radius:4px;
-            transition:background 0.15s;flex-shrink:0;
-        `;
-        wrap.onmouseenter = () => wrap.style.background = 'rgba(255,255,255,0.15)';
-        wrap.onmouseleave = () => wrap.style.background = 'transparent';
-        wrap.title = 'Video Speed Controls';
+        for (const [sel, pos] of CONFIG.TOOLBAR_SELECTORS) {
+            const el = document.querySelector(sel);
+            if (!el) continue;
 
-        const lbl = document.createElement('span');
-        lbl.className = 'vsc-lbl';
-        lbl.textContent = `${currentSpeed.toFixed(1)}x`;
-        wrap.appendChild(lbl);
-        wrap.onclick = e => { e.stopPropagation(); togglePanel(wrap); };
+            const wrap = document.createElement('div');
+            wrap.id = 'vsc-toolbar-btn';
+            wrap.style.cssText = `
+                position:relative;display:inline-flex;align-items:center;
+                height:100%;cursor:pointer;padding:0 7px;
+                font-family:Arial,sans-serif;font-size:12px;font-weight:bold;
+                color:rgba(255,255,255,0.95);border-radius:4px;
+                transition:background 0.15s;flex-shrink:0;
+            `;
+            wrap.onmouseenter = () => wrap.style.background = 'rgba(255,255,255,0.15)';
+            wrap.onmouseleave = () => wrap.style.background = 'transparent';
+            wrap.title = 'Video Speed Controls';
 
-        pos === 'prepend' ? el.prepend(wrap) : el.appendChild(wrap);
-        toolbarBtn = wrap;
-        updateUI();
+            const lbl = document.createElement('span');
+            lbl.className = 'vsc-lbl';
+            lbl.textContent = `${currentSpeed.toFixed(1)}x`;
+            wrap.appendChild(lbl);
+            wrap.onclick = e => { e.stopPropagation(); togglePanel(wrap); };
+
+            pos === 'prepend' ? el.prepend(wrap) : el.appendChild(wrap);
+            toolbarBtn = wrap;
+            updateUI();
+            return true;
+        }
+        return false;
     }
 
     // ─────────────────────────────────────────────
-    //  Setup — called whenever a new video is found
+    //  Setup
     // ─────────────────────────────────────────────
 
     function setup() {
         if (!activeVideo) return;
+        buildFloatBtn();
 
-        const wrapper = findPlayerWrapper(activeVideo);
-        buildFloatBtn(wrapper);
-
-        // Poll for toolbar
         clearInterval(pollTimer);
         let tries = 0;
         pollTimer = setInterval(() => {
-            if (!toolbarBtn?.isConnected) {
-                const tb = findToolbar(wrapper);
-                if (tb) buildToolbarBtn(tb.el, tb.pos);
-            }
+            tryBuildToolbarBtn();
             updateUI();
-            if (++tries > 60) clearInterval(pollTimer); // 30s timeout
+            if (++tries > 60 || toolbarBtn?.isConnected) clearInterval(pollTimer);
         }, 500);
     }
 
@@ -438,12 +382,12 @@
         const K = CONFIG.KEYS;
         let handled = true;
 
-        if      (key === K.SPEED_UP)       setSpeed(currentSpeed + CONFIG.SPEED_STEP);
-        else if (key === K.SPEED_DOWN)     setSpeed(currentSpeed - CONFIG.SPEED_STEP);
-        else if (key === K.RESET)          { setSpeed(1.0); cycleIndex = 0; }
-        else if (K.CYCLE.includes(key))    { cycleIndex = (cycleIndex+1) % CONFIG.CYCLE_SPEEDS.length; setSpeed(CONFIG.CYCLE_SPEEDS[cycleIndex]); }
-        else if (key === K.FRAME_PREV)     { stepFrame(activeVideo,-1); showTooltip('◄ Previous Frame'); }
-        else if (key === K.FRAME_NEXT)     { stepFrame(activeVideo, 1); showTooltip('Next Frame ►'); }
+        if      (key === K.SPEED_UP)    setSpeed(currentSpeed + CONFIG.SPEED_STEP);
+        else if (key === K.SPEED_DOWN)  setSpeed(currentSpeed - CONFIG.SPEED_STEP);
+        else if (key === K.RESET)       { setSpeed(1.0); cycleIndex = 0; }
+        else if (K.CYCLE.includes(key)) { cycleIndex = (cycleIndex+1) % CONFIG.CYCLE_SPEEDS.length; setSpeed(CONFIG.CYCLE_SPEEDS[cycleIndex]); }
+        else if (key === K.FRAME_PREV)  { stepFrame(activeVideo,-1); showTooltip('◄ Previous Frame'); }
+        else if (key === K.FRAME_NEXT)  { stepFrame(activeVideo, 1); showTooltip('Next Frame ►'); }
         else handled = false;
 
         if (handled) { e.preventDefault(); e.stopPropagation(); }
