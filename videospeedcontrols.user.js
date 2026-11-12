@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HTML5 Video Speed Controls
 // @namespace    https://github.com/mariayuno/html5-video-speed-control
-// @version      2.2
+// @version      2.3
 // @description  Simple keyboard controls for HTML5 video speed and frame-stepping
 // @author       lunagus, mariayuno
 // @license      MIT
@@ -67,6 +67,30 @@
     let panelOpen    = false;
     let pollTimer    = null;
     let rafId        = null;
+
+    // ─────────────────────────────────────────────
+    //  Per-tab persistence (sessionStorage is scoped to this tab + origin)
+    // ─────────────────────────────────────────────
+
+    const STORAGE_KEY = 'vsc-speed';
+
+    function loadSavedSpeed() {
+        try {
+            const v = parseFloat(sessionStorage.getItem(STORAGE_KEY));
+            return Number.isFinite(v) ? Math.min(CONFIG.MAX_SPEED, Math.max(CONFIG.MIN_SPEED, v)) : null;
+        } catch (_) { return null; }
+    }
+
+    function saveSpeed(rate) {
+        try { sessionStorage.setItem(STORAGE_KEY, String(rate)); } catch (_) {}
+    }
+
+    // Apply this tab's saved speed to a video (no-op if none saved or already matching)
+    function applySavedSpeed(video) {
+        const saved = loadSavedSpeed();
+        if (saved === null || !video) return;
+        if (Math.abs(video.playbackRate - saved) > 0.001) video.playbackRate = saved;
+    }
 
     // ─────────────────────────────────────────────
     //  Top layer helpers
@@ -157,7 +181,7 @@
 
     function updateActiveVideo() {
         const v = findBestVideo();
-        if (v && v !== activeVideo) { activeVideo = v; currentSpeed = +v.playbackRate.toFixed(1); }
+        if (v && v !== activeVideo) { activeVideo = v; applySavedSpeed(v); currentSpeed = +v.playbackRate.toFixed(1); }
     }
 
     // ─────────────────────────────────────────────
@@ -190,6 +214,7 @@
         if (!activeVideo) return;
         currentSpeed = +Math.min(CONFIG.MAX_SPEED, Math.max(CONFIG.MIN_SPEED, rate)).toFixed(1);
         activeVideo.playbackRate = currentSpeed;
+        saveSpeed(currentSpeed);
         updateUI();
         showTooltip(`Speed: ${currentSpeed.toFixed(1)}x`);
     }
@@ -465,8 +490,14 @@
             if (!(e.target instanceof HTMLVideoElement)) return;
             const wasNew = e.target !== activeVideo;
             activeVideo = e.target;
+            applySavedSpeed(activeVideo);
             currentSpeed = +activeVideo.playbackRate.toFixed(1);
             if (wasNew || !floatBtn?.isConnected) setup();
+        }, true);
+
+        // Sites often reset playbackRate when new media loads; reapply the tab's speed
+        document.addEventListener('loadedmetadata', e => {
+            if (e.target instanceof HTMLVideoElement) applySavedSpeed(e.target);
         }, true);
 
         // Keep UI in sync when the site (or anything else) changes the rate
